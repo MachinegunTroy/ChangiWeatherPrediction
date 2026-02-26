@@ -22,24 +22,20 @@ It dynamically scrapes real-time local ground truth data and regional meteorolog
 """)
 
 # ==========================================
-# 2. LOAD ASSETS (Weights & Scalers)
+# 2. LOAD ASSETS (Weights Only)
 # ==========================================
 @st.cache_resource
 def load_models():
-    # We load the lightweight 5KB weights file instead of the 1.7GB model
+    # We load the lightweight 5KB weights file (No scalers needed for ARIMAX!)
     with open('arimax_weights.pkl', 'rb') as f:
         weights = pickle.load(f)
-    with open('scaler_x.pkl', 'rb') as f:
-        scaler_x = pickle.load(f)
-    with open('scaler_y.pkl', 'rb') as f:
-        scaler_y = pickle.load(f)
-    return weights, scaler_x, scaler_y
+    return weights
 
 try:
-    weights, scaler_x, scaler_y = load_models()
+    weights = load_models()
     models_loaded = True
 except Exception as e:
-    st.error(f"⚠️ Could not load assets. Please ensure 'arimax_weights.pkl', 'scaler_x.pkl', and 'scaler_y.pkl' are in the same folder. Error: {e}")
+    st.error(f"⚠️ Could not load assets. Please ensure 'arimax_weights.pkl' is in the repo. Error: {e}")
     models_loaded = False
 
 # ==========================================
@@ -128,29 +124,26 @@ if models_loaded:
             st.error("Failed to retrieve sufficient data. Please try again later.")
         else:
             try:
-                # 1. Prepare and scale the scraped data
+                # 1. Prepare the raw scraped data (NO SCALING NEEDED!)
                 target_col = 'Daily Rainfall Total (mm)_S24'
                 exog_cols = [c for c in df.columns if c != target_col]
                 
-                recent_y_scaled = scaler_y.transform(df[[target_col]]).flatten()
-                recent_x_scaled = scaler_x.transform(df[exog_cols])
+                recent_y = df[target_col].values
+                recent_x = df[exog_cols]
                 
                 # 2. Reconstruct the Model dynamically
                 # Build an "empty" model with the recent data structure
-                live_model = ARIMA(recent_y_scaled, exog=recent_x_scaled, order=(30,1,0))
+                live_model = ARIMA(recent_y, exog=recent_x, order=(30,1,0))
                 
                 # Inject the 42-year trained weights into this live model
                 live_model_fitted = live_model.smooth(weights)
                 
                 # 3. Forecast Tomorrow
-                latest_exog_scaled = recent_x_scaled[-1:] # Use today's exog to predict tomorrow
-                pred_scaled = live_model_fitted.forecast(steps=1, exog=latest_exog_scaled)
-                
-                # 4. Inverse Scale
-                pred_mm = scaler_y.inverse_transform(pred_scaled.reshape(-1, 1)).flatten()[0]
+                latest_exog = recent_x.iloc[-1:] # Use today's exog to predict tomorrow
+                pred_mm = live_model_fitted.forecast(steps=1, exog=latest_exog).iloc[0]
                 pred_mm = max(pred_mm, 0) # No negative rain
                 
-                # 5. Classify
+                # 4. Classify
                 if pred_mm < 0.2:
                     severity = "Class 0: No Rain / Clear Skies"
                     color = "success"
@@ -164,7 +157,7 @@ if models_loaded:
                     color = "error"
                     action = "🚨 INITIATE TARMAC SAFETY PROTOCOLS. Potential flight delays."
                 
-                # 6. Display Dashboard
+                # 5. Display Dashboard
                 st.markdown("---")
                 col1, col2 = st.columns(2)
                 with col1:
@@ -183,4 +176,4 @@ if models_loaded:
                     st.dataframe(df.tail(5))
                     
             except Exception as e:
-                st.error(f"Prediction failed. Ensure the saved scaler expects the exact same columns scraped today. Error: {e}")
+                st.error(f"Prediction failed. Error: {e}")
